@@ -1,0 +1,182 @@
+----------------------------------------------------------------------------
+install dpdk on Linux:
+
+sudo apt-get install build-essential linux-headers-$(uname -r) git python net-tools
+sudo apt-get install libnuma-dev
+
+pktgen-dpdk 3.6.6 depends on lua5.3.3
+
+sudo apt-get install  liblua5.3-dev
+// configure pktgen
+./tools/run.py -s ens38
+// run pktgen
+./tools/run.py ens38
+
+// configure ports
+set <0> count 100
+set <0> size 64
+set <0> sport
+set <0> dport 
+set <0> dst mac 04:02:02:02:02:02
+set <0> proto tcp|udp|icmp
+set <0> patern abc|none|zero|user
+set <0> user pattern <string>
+
+// start/stop sending packets on ports
+start 0
+stop 0
+str // start all ports
+stp // stop all ports
+
+// help display help page
+// quit to quit pktgen
+// 
+extract dpdk source code, cd into the directory, set environment variables:
+echo export RTE_SDK=$(pwd) >> ~/.bashrc
+echo export RTE_TARGET=x86_64-native-linuxapp-gcc  >> ~/.bashrc
+source ~/.bashrc
+
+reserve 2MB hugepages 
+sudo sh -c 'echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages'
+
+To prepare a target without building it, for example, if the configuration changes need to be made before compilation, use the make config T=<target> command:
+make config T=x86_64-native-linuxapp-gcc
+
+To install and make targets, use the make install T=<target> command in the top-level DPDK directory.
+make install T=x86_64-native-linuxapp-gcc
+
+Once the target environment is created, the user may move to the target environment directory and continue to make code changes and re-compile. The user may also make modifications to the compile-time DPDK configuration by editing the .config file in the build directory. (This is a build-local copy of the defconfig file from the top- level config directory).
+
+Once a target is created it contains all libraries, including poll-mode drivers, and header files for the DPDK environment that are required to build customer applications. In addition, the test and testpmd applications are built under the build/app directory, which may be used for testing. A kmod directory is also present that contains kernel modules which may be loaded if needed.
+
+in our case: dir x86_64-native-linuxapp-gcc includes:
+
+can load uio, vfio, or bifurcated driver into kernel: (we use uio)
+sudo modprobe uio_pci_generic
+or
+sudo modprobe uio
+sudo insmod kmod/igb_uio.ko
+
+lsmod to check the installed modules
+
+To bind ports to the uio_pci_generic, igb_uio or vfio-pci module for DPDK use, and then subsequently return ports to Linux* control, a utility script called dpdk-devbind.py is provided in the usertools subdirectory. This utility can be used to provide a view of the current state of the network ports on the system, and to bind and unbind those ports from the different kernel modules, including the uio and vfio modules. dpdk-devbind.py --help or --usage
+
+./usertools/dpdk-devbind.py --status
+
+bind driver:
+./usertools/dpdk-devbind.py --bind=igb_uio 02:02.0
+bind to e1000 driver:
+./usertools/dpdk-devbind.py --bind=e1000 02:02.0
+
+Once an DPDK target environment directory has been created (such as x86_64-native-linux-gcc), it contains all libraries and header files required to build an application.
+
+When compiling an application in the Linux* environment on the DPDK, the following variables must be exported:
+    RTE_SDK - Points to the DPDK installation directory.
+    RTE_TARGET - Points to the DPDK target environment directory.
+
+cd examples/helloworld/
+make
+
+Before running the application make sure:
+
+    Hugepages setup is done.
+    Any kernel driver being used is loaded.
+    In case needed, ports being used by the application should be bound to the corresponding kernel driver.
+
+run helloworld:
+sudo ./build/helloworld -l 0,1 -n 1
+The -c or -l and option is mandatory; the others are optional.
+-c COREMASK or -l CORELIST: An hexadecimal bit mask of the cores to run on. Note that core numbering can change between platforms and should be determined beforehand. The corelist is a set of core numbers instead of a bitmap core mask.
+
+On initialization of the EAL layer by an DPDK application, the logical cores to be used and their socket location are displayed. This information can also be determined for all cores on the system by examining the /proc/cpuinfo file, for example, by running cat /proc/cpuinfo. The physical id attribute listed for each processor indicates the CPU socket to which it belongs. This can be useful when using other processors to understand the mapping of the logical cores to the sockets.
+
+cat /proc/cpuinfo
+
+OR we can use dpdk-setup.sh:
+
+--------------------------------------------------------------------------------------------------------
+
+Programming:
+
+The framework creates a set of libraries for specific environments through the creation of an Environment Abstraction Layer (EAL)
+
+The DPDK implements a run to completion model for packet processing, where all resources must be allocated prior to calling Data Plane applications, running as execution units on logical processing cores.
+
+In addition to the run-to-completion model, a pipeline model may also be used by passing packets or messages between cores via the rings.
+
+For DPDK applications, two environmental variables (RTE_SDK and RTE_TARGET) must be configured before compiling the applications.
+export RTE_SDK=/home/user/DPDK
+export RTE_TARGET=x86_64-native-linux-gcc
+
+2.3.1. Ring Manager (librte_ring)
+
+The ring structure provides a lockless multi-producer, multi-consumer FIFO API in a finite size table.  A ring is used by the Memory Pool Manager (librte_mempool) and may be used as a general communication mechanism between cores and/or execution blocks connected together on a logical core.
+
+2.3.2. Memory Pool Manager (librte_mempool)
+
+The Memory Pool Manager is responsible for allocating pools of objects in memory. A pool is identified by name and uses a ring to store free objects.
+
+mbuf->mempool->ring
+
+hash, longet prefix match packet forwarding
+
+libret_net: ip, tcp headers
+
+EAL: 
+assign execution units to specific cores
+
+using the pthread, pthread setaffinity, each execution unit will be assigned to a specific logical core to run as a user-level thread.
+
+lcore refers to a logical execution unit of the processor, sometimes called a hardware thread.
+
+一个核心最少对应一个线程，但通过超线程技术，一个核心可以对应两个线程，也就是说它可以同时运行两个线程。
+
+
+CPU的线程数概念仅仅只针对Intel的CPU才有用，因为它是通过Intel超线程技术来实现的，最早应用在Pentium4上。如果没有超线程技术，一个CPU核心对应一个线程。所以，对于AMD的CPU来说，只有核心数的概念，没有线程数的概念。 
+
+设计决定，intel给他的x86设计了逻辑线程=2*物理核心数，ibm的power8是逻辑线程=8*物理核心数
+
+超线程技术？
+
+The term “lcore” refers to an EAL thread, which is really a Linux/FreeBSD pthread. “EAL pthreads” are created and managed by EAL and execute the tasks issued by remote_launch. In each EAL pthread, there is a TLS (Thread Local Storage) called _lcore_id for unique identification. As EAL pthreads usually bind 1:1 to the physical CPU, the _lcore_id is typically equal to the CPU ID.
+
+malloc This API is meant to be used by an application that requires malloc-like functions at initialization time.
+For allocating/freeing data at runtime, in the fast-path of an application, the memory pool library should be used instead.
+
+service core?
+
+Use cases for the Ring library include:
+
+        Communication between applications in the DPDK
+        Used by memory pool allocator
+
+All allocations that require a high level of performance should use a pool-based memory allocator. Below are some examples:
+
+    Mbuf Library
+    Environment Abstraction Layer , for logging service
+    Any application that needs to allocate fixed-sized objects in the data plane and that will be continuously utilized by the system.
+
+All networking application should use mbufs to transport network packets.
+
+Some information is retrieved by the network driver and stored in an mbuf to make processing easier. For instance, the VLAN, the RSS hash result (see Poll Mode Driver) and a flag indicating that the checksum was computed by hardware.
+
+An mbuf also contains the input port (where it comes from), and the number of segment mbufs in the chain.
+
+For chained buffers, only the first mbuf of the chain stores this meta information.
+
+direct, indirect buffers?
+
+number of PMD ports?
+
+Multiple logical cores should never share receive or transmit queues for interfaces since this would require global locks and hinder performance.
+
+
+10.4.1. Device Identification
+
+Each NIC port is uniquely designated by its (bus/bridge, device, function) PCI identifiers assigned by the PCI probing/enumeration function executed at DPDK initialization. Based on their PCI identifier, NIC ports are assigned two other identifiers:
+
+    A port index used to designate the NIC port in all functions exported by the PMD API.
+    A port name used to designate the port in console messages, for administration or debugging purposes. For ease of use, the port name includes the port index.
+
+per-lcore variables?
+
