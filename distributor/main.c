@@ -2,6 +2,10 @@
  * Copyright(c) 2010-2017 Intel Corporation
  */
 
+// allocate mbuf pool
+// initialize ports
+// allocate lcores
+
 #include <stdint.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -103,6 +107,8 @@ static void print_stats(void);
  * Initialises a given port using global settings and with the rx buffers
  * coming from the mbuf_pool passed as parameter
  */
+// configure the number of receive and transmit queues on each port
+// configure descriptors on each receive and transmit queue
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
@@ -266,6 +272,25 @@ lcore_rx(struct lcore_params *p)
 		struct rte_ring *out_ring = p->rx_dist_ring;
 		/* struct rte_ring *out_ring = p->dist_tx_ring; */
 
+		/**
+		 * Enqueue several objects on a ring.
+		 *
+		 * This function calls the multi-producer or the single-producer
+		 * version depending on the default behavior that was specified at
+		 * ring creation time (see flags).
+		 *
+		 * @param r
+		 *   A pointer to the ring structure.
+		 * @param obj_table
+		 *   A pointer to a table of void * pointers (objects).
+		 * @param n
+		 *   The number of objects to add in the ring from the obj_table.
+		 * @param free_space
+		 *   if non-NULL, returns the amount of space in the ring after the
+		 *   enqueue operation has finished.
+		 * @return
+		 *   - n: Actual number of objects enqueued.
+		 */
 		uint16_t sent = rte_ring_enqueue_burst(out_ring,
 				(void *)bufs, nb_ret, NULL);
 #endif
@@ -332,14 +357,68 @@ lcore_distributor(struct lcore_params *p)
 
 	printf("\nCore %u acting as distributor core.\n", rte_lcore_id());
 	while (!quit_signal_dist) {
+		/**
+		 * Dequeue multiple objects from a ring up to a maximum number.
+		 *
+		 * This function calls the multi-consumers or the single-consumer
+		 * version, depending on the default behaviour that was specified at
+		 * ring creation time (see flags).
+		 *
+		 * @param r
+		 *   A pointer to the ring structure.
+		 * @param obj_table
+		 *   A pointer to a table of void * pointers (objects) that will be filled.
+		 * @param n
+		 *   The number of objects to dequeue from the ring to the obj_table.
+		 * @param available
+		 *   If non-NULL, returns the number of remaining ring entries after the
+		 *   dequeue has finished.
+		 * @return
+		 *   - Number of objects dequeued
+		 */
 		const uint16_t nb_rx = rte_ring_dequeue_burst(in_r,
 				(void *)bufs, BURST_SIZE*1, NULL);
 		if (nb_rx) {
 			app_stats.dist.in_pkts += nb_rx;
 
 			/* Distribute the packets */
+			/**
+			 * Process a set of packets by distributing them among workers that request
+			 * packets. The distributor will ensure that no two packets that have the
+			 * same flow id, or tag, in the mbuf will be processed on different cores at
+			 * the same time.
+			 *
+			 * The user is advocated to set tag for each mbuf before calling this function.
+			 * If user doesn't set the tag, the tag value can be various values depending on
+			 * driver implementation and configuration.
+			 *
+			 * This is not multi-thread safe and should only be called on a single lcore.
+			 *
+			 * @param d
+			 *   The distributor instance to be used
+			 * @param mbufs
+			 *   The mbufs to be distributed
+			 * @param num_mbufs
+			 *   The number of mbufs in the mbufs array
+			 * @return
+			 *   The number of mbufs processed.
+			 */
 			rte_distributor_process(d, bufs, nb_rx);
 			/* Handle Returns */
+			/**
+			 * Get a set of mbufs that have been returned to the distributor by workers
+			 *
+			 * This should only be called on the same lcore as rte_distributor_process()
+			 *
+			 * @param d
+			 *   The distributor instance to be used
+			 * @param mbufs
+			 *   The mbufs pointer array to be filled in
+			 * @param max_mbufs
+			 *   The size of the mbufs array
+			 * @return
+			 *   The number of mbufs returned in the mbufs array.
+			 */
 			const uint16_t nb_ret =
 				rte_distributor_returned_pkts(d,
 					bufs, BURST_SIZE*2);
@@ -364,8 +443,28 @@ lcore_distributor(struct lcore_params *p)
 	printf("\nCore %u exiting distributor task.\n", rte_lcore_id());
 	quit_signal_work = 1;
 
+	/**
+	 * Flush the distributor component, so that there are no in-flight or
+	 * backlogged packets awaiting processing
+	 *
+	 * This should only be called on the same lcore as rte_distributor_process()
+	 *
+	 * @param d
+	 *   The distributor instance to be used
+	 * @return
+	 *   The number of queued/in-flight packets that were completed by this call.
+	 */
 	rte_distributor_flush(d);
 	/* Unblock any returns so workers can exit */
+	/**
+	 * Clears the array of returned packets used as the source for the
+	 * rte_distributor_returned_pkts() API call.
+	 *
+	 * This should only be called on the same lcore as rte_distributor_process()
+	 *
+	 * @param d
+	 *   The distributor instance to be used
+	 */
 	rte_distributor_clear_returns(d);
 	quit_signal_rx = 1;
 	return 0;
@@ -412,6 +511,16 @@ lcore_tx(struct rte_ring *in_r)
 
 			/* for traffic we receive, queue it up for transmit */
 			uint16_t i;
+			/**
+			 * Prefetch a cache line into all cache levels (non-temporal/transient version)
+			 *
+			 * The non-temporal prefetch is intended as a prefetch hint that processor will
+			 * use the prefetched data only once or short period, unlike the
+			 * rte_prefetch0() function which imply that prefetched data to use repeatedly.
+			 *
+			 * @param p
+			 *   Address to prefetch
+			 */
 			rte_prefetch_non_temporal((void *)bufs[0]);
 			rte_prefetch_non_temporal((void *)bufs[1]);
 			rte_prefetch_non_temporal((void *)bufs[2]);
@@ -722,6 +831,9 @@ main(int argc, char *argv[])
 				"All available ports are disabled. Please set portmask.\n");
 	}
 
+	// Function to create a new distributor instance
+	// Reserves the memory needed for the distributor operation and 
+	// initializes the distributor to work with the configured number of workers.
 	d = rte_distributor_create("PKT_DIST", rte_socket_id(),
 			rte_lcore_count() - 4,
 			RTE_DIST_ALG_BURST);
@@ -732,11 +844,14 @@ main(int argc, char *argv[])
 	 * scheduler ring is read by the transmitter core, and written to
 	 * by scheduler core
 	 */
+	// create a single-consumer and single-producer ring
 	dist_tx_ring = rte_ring_create("Output_ring", SCHED_TX_RING_SZ,
 			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
 	if (dist_tx_ring == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create output ring\n");
 
+	// receive core write, scheduler core read
+	// thus a single-consumer, single-producer ring
 	rx_dist_ring = rte_ring_create("Input_ring", SCHED_RX_RING_SZ,
 			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
 	if (rx_dist_ring == NULL)

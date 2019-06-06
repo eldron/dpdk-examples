@@ -12,6 +12,8 @@ each lcore does:
 	2. for each receive port:
 			receive packets;
 			buffer the packet to destination port's queue for later transmission
+
+no dedicated lcore for packet transmission
 */
 
 #include <stdio.h>
@@ -256,6 +258,7 @@ l2fwd_main_loop(void)
 				portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
 				buffer = tx_buffer[portid];
 
+				// Send any packets queued up for transmission on a port and HW queue
 				sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
 				if (sent)
 					port_statistics[portid].tx += sent;
