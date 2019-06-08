@@ -11,6 +11,10 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
+#include <rte_ip.h>
+#include <rte_byteorder.h>
+#include <rte_tcp.h>
+#include <rte_udp.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -100,7 +104,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			addr.addr_bytes[4], addr.addr_bytes[5]);
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	
+
 	// In non-promiscuous mode, when a NIC receives a frame, 
 	// it drops it unless the frame is addressed to that NIC's MAC address or is a broadcast or multicast addressed frame.
 	// In promiscuous mode, however, the NIC allows all frames through, 
@@ -153,6 +157,51 @@ lcore_main(void)
 				continue;
 
 			// do something with the received packets
+			// display packet mac, ip, port
+			printf("received %u packets from port %u\n", nb_rx, port);
+			uint16_t i;
+			for(i = 0;i < nb_rx;i++){
+				rte_prefetch0(rte_pktmbuf_mtod(bufs[i], void *)/* A macro that points to the start of the data in the mbuf.*/);
+				struct ether_hdr * eth = rte_pktmbuf_mtod(bufs[i], struct ether_hdr *);
+				printf("DST MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+					eth->d_addr.addr_bytes[0], eth->d_addr.addr_bytes[1],
+					eth->d_addr.addr_bytes[2], eth->d_addr.addr_bytes[3],
+					eth->d_addr.addr_bytes[4], eth->d_addr.addr_bytes[5]);
+				printf("SRC MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+					eth->s_addr.addr_bytes[0], eth->s_addr.addr_bytes[1],
+					eth->s_addr.addr_bytes[2], eth->s_addr.addr_bytes[3],
+					eth->s_addr.addr_bytes[4], eth->s_addr.addr_bytes[5]);
+				printf("ether type is %u\n", eth->ether_type);
+
+				/**
+				 * A macro that points to an offset into the data in the mbuf.
+				 *
+				 * The returned pointer is cast to type t. Before using this
+				 * function, the user must ensure that the first segment is large
+				 * enough to accommodate its data.
+				 *
+				 * @param m
+				 *   The packet mbuf.
+				 * @param o
+				 *   The offset into the mbuf data.
+				 * @param t
+				 *   The type to cast the result into.
+				 */
+				struct ipv4_hdr * ipv4_hdr = rte_pktmbuf_mtod_offset(bufs[i], struct ipv4_hdr *, sizeof(struct ether_hdr));
+				uint32_t dstip = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
+				printf("dst ip is: %u %u %u %u\n", (dstip >> 24) & 0xff, (dstip >> 16) & 0xff, (dstip >> 8) & 0xff, dstip & 0xff);
+				uint32_t srcip = rte_be_to_cpu_32(ipv4_hdr->src_addr);
+				printf("src ip is: %u %u %u %u\n", (srcip >> 24) & 0xff, (srcip >> 16) & 0xff, (srcip >> 8) & 0xff, srcip & 0xff);
+				printf("next proto id is %u\n", ipv4_hdr->next_proto_id);
+				uint8_t iphdr_len = (ipv4_hdr->version_ihl & 0x0f) * 4;
+				printf("ip header length is %u\n", iphdr_len);
+				if(ipv4_hdr->next_proto_id == 6){
+					struct tcp_hdr * tcphdr = rte_pktmbuf_mtod_offset(bufs[i], struct tcp_hdr *, sizeof(struct ether_hdr) + iphdr_len);
+					uint16_t src_port = rte_be_to_cpu_16(tcphdr->src_port);
+					uint16_t dst_port = rte_be_to_cpu_16(tcphdr->dst_port);
+					printf("tcp src_port is %u, tcp dst_port is %u\n", src_port, dst_port);
+				}
+			}
 
 
 			/* Send burst of TX packets, to second port of pair. */

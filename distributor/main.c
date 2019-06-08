@@ -20,6 +20,8 @@
 #include <rte_prefetch.h>
 #include <rte_distributor.h>
 #include <rte_pause.h>
+#include <rte_ip.h>
+#include <rte_tcp.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -113,7 +115,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf = port_conf_default;
-	const uint16_t rxRings = 1, txRings = rte_lcore_count() - 1;
+	const uint16_t rxRings = 1, txRings = 1;
 	int retval;
 	uint16_t q;
 	uint16_t nb_rxd = RX_RING_SIZE;
@@ -131,6 +133,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	port_conf.rx_adv_conf.rss_conf.rss_hf &=
 		dev_info.flow_type_rss_offloads;
+
+	printf("dev_info.flow_type_rss_offloads = %lu\n", dev_info.flow_type_rss_offloads);
+
 	if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
 			port_conf_default.rx_adv_conf.rss_conf.rss_hf) {
 		printf("Port %u modified RSS hash function based on hardware support,"
@@ -381,6 +386,15 @@ lcore_distributor(struct lcore_params *p)
 		if (nb_rx) {
 			app_stats.dist.in_pkts += nb_rx;
 
+			// set user tag so that the distributor can use the tag to distribute flows to different lcores
+			int i;
+			for(i = 0;i < nb_rx;i++){
+				//printf("packet user tag is %u\n", bufs[i]->hash.usr);
+				struct ipv4_hdr * ipv4_hdr = rte_pktmbuf_mtod_offset(bufs[i], struct ipv4_hdr *, sizeof(struct ether_hdr));
+				uint8_t iphdr_len = (ipv4_hdr->version_ihl & 0x0f) * 4;
+				struct tcp_hdr * tcphdr = rte_pktmbuf_mtod_offset(bufs[i], struct tcp_hdr *, sizeof(struct ether_hdr) + iphdr_len);
+				bufs[i]->hash.usr = ipv4_hdr->dst_addr + ipv4_hdr->src_addr + tcphdr->dst_port + tcphdr->src_port;
+			}
 			/* Distribute the packets */
 			/**
 			 * Process a set of packets by distributing them among workers that request

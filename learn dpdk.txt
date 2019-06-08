@@ -7,6 +7,10 @@ sudo apt-get install libnuma-dev
 pktgen-dpdk 3.6.6 depends on lua5.3.3
 
 sudo apt-get install  liblua5.3-dev
+
+sudo ifconfig ethdev down
+run ./usertools dpdk-setup.sh to allocate hugepages, bind ether devices
+
 // configure pktgen
 ./tools/run.py -s ens38
 // run pktgen
@@ -21,6 +25,22 @@ set <0> dst mac 04:02:02:02:02:02
 set <0> proto tcp|udp|icmp
 set <0> patern abc|none|zero|user
 set <0> user pattern <string>
+
+range 0 src mac start min max increment
+e.g. range 0 src mac 00:00:00:00:00:00 00:00:00:00:00:00 ff:ff:ff:ff:ff:ff 00:00:00:00:00:01
+
+range 0 dst mac start min max increment
+
+range 0 src ip start min max increment
+range 0 dst ip start min maxc increment
+e.g.  range 0 dst ip 0.0.0.0 0.0.0.0 255.255.255.255 0.0.1.0
+
+range 0 src port start min max increment
+range 0 dst port start min max increment
+
+range 0 size start min max increment
+
+load <path-to-file> // load a command/script file from the given path
 
 // start/stop sending packets on ports
 start 0
