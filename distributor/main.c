@@ -37,6 +37,28 @@
 #define ANSI_COLOR_RED     "\x1b[31m"
 #define ANSI_COLOR_RESET   "\x1b[0m"
 
+// maximum number of lcores
+#define MAX_NUM_LCORES 32
+// maximum number of middleboxes per flow, each middlebox is identified by a uint64_t 
+#define MAX_MIDDLEBOXES_PER_FLOW 10
+
+// the middlebox deployment platform's IP address
+// 202.197.15.66
+unsigned platform_ip = 0xCAC50F42;
+
+struct {
+	// flow information
+	uint32_t src_ip;
+	uint32_t dst_ip;
+	uint16_t src_port;
+	uint16_t dst_port;
+	uint8_t proto;
+	// middlebox chain specification
+	uint64_t middleboxes[MAX_MIDDLEBOXES_PER_FLOW];
+} middlebox_chain_configure;
+
+struct rte_mempool * mcconfig_pool;
+
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
 volatile uint8_t quit_signal;
@@ -208,6 +230,7 @@ struct lcore_params {
 	struct rte_ring *rx_dist_ring;
 	struct rte_ring *dist_tx_ring;
 	struct rte_mempool *mem_pool;
+	struct rte_ring ** worker_rings;
 };
 
 static int
@@ -217,6 +240,7 @@ lcore_rx(struct lcore_params *p)
 	const int socket_id = rte_socket_id();
 	uint16_t port;
 	struct rte_mbuf *bufs[BURST_SIZE*2];
+	struct middlebox_chain_configure * 
 
 	RTE_ETH_FOREACH_DEV(port) {
 		/* skip ports that are not enabled */
@@ -810,6 +834,10 @@ main(int argc, char *argv[])
 				"1 lcore for packet TX\n"
 				"and at least 1 lcore for worker threads\n");
 
+	if(rte_lcore_count() > MAX_NUM_LCORES){
+		rte_exit(EXIT_FAILURE, "too many lcores specified, this application needs less than 32 lcores\n");
+	}
+
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
@@ -824,6 +852,15 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 	nb_ports_available = nb_ports;
 
+	mcconfig_pool = rte_mempool_create("mcconfig_pool", 63, sizeof(struct middlebox_chain_configure),
+		   0, 0,
+		   NULL, NULL,
+		   NULL, NULL,
+		   rte_socket_id(), 0);
+	if(mcconfig_pool == NULL){
+		rte_exit(EXIT_FAILURE, "cannot create mcconfig_pool\n");
+	}
+	
 	/* initialize all ports */
 	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */
@@ -871,6 +908,57 @@ main(int argc, char *argv[])
 	if (rx_dist_ring == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create output ring\n");
 
+	// create a ring for each worker thread
+	// used by the rx thread to transmit control messages to the work threads
+	unsigned worker_lcore_ids[MAX_NUM_LCORES]; // should be enough in most cases
+	// index by the work lcore id
+	struct rte_ring * worker_rings[MAX_NUM_LCORES];
+	unsigned i;
+	for(i = 0;i < MAX_NUM_LCORES;i++){
+		worker_rings[i] = NULL;
+	}
+
+	unsigned number_of_worker_lcores = 0;
+	unsigned rx_lcore_id;
+	unsigned tx_lcore_id;
+	unsigned distributor_lcore_id;
+
+	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		if (worker_id == rte_lcore_count() - 3) {
+			printf("Starting distributor on lcore_id %d\n",
+					lcore_id);
+			distributor_lcore_id = lcore_id;
+		} else if (worker_id == rte_lcore_count() - 4) {
+			printf("Starting tx  on worker_id %d, lcore_id %d\n",
+					worker_id, lcore_id);
+			/* tx core */
+			// rte_eal_remote_launch((lcore_function_t *)lcore_tx,
+			// 		dist_tx_ring, lcore_id);
+			tx_lcore_id = lcore_id;
+		} else if (worker_id == rte_lcore_count() - 2) {
+			printf("Starting rx on worker_id %d, lcore_id %d\n",
+					worker_id, lcore_id);
+			rx_lcore_id = lcore_id;
+		} else {
+			printf("Starting worker on worker_id %d, lcore_id %d\n",
+					worker_id, lcore_id);
+			worker_lcore_ids[number_of_worker_lcores] = lcore_id;
+			number_of_worker_lcores++;
+		}
+		worker_id++;
+	}
+
+	for(i = 0;i < number_of_worker_lcores;i++){
+		char name[50];
+		sprintf(name, "workring%u", i);
+		worker_rings[worker_lcore_ids[i]] = rte_ring_create(name, SCHED_RX_RING_SZ,
+			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+		if (worker_rings[worker_lcore_ids[i]] == NULL) {
+			rte_exit(EXIT_FAILURE, "Cannot create worker ring\n");
+		}
+	}
+
+	worker_id = 0;
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 		if (worker_id == rte_lcore_count() - 3) {
 			printf("Starting distributor on lcore_id %d\n",
@@ -881,7 +969,8 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d,
-				rx_dist_ring, dist_tx_ring, mbuf_pool};
+				rx_dist_ring, dist_tx_ring, mbuf_pool, &worker_rings};
+
 			rte_eal_remote_launch(
 				(lcore_function_t *)lcore_distributor,
 				p, lcore_id);
@@ -900,7 +989,7 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d, rx_dist_ring,
-					dist_tx_ring, mbuf_pool};
+					dist_tx_ring, mbuf_pool, &worker_rings};
 			rte_eal_remote_launch((lcore_function_t *)lcore_rx,
 					p, lcore_id);
 		} else {
@@ -911,7 +1000,7 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d, rx_dist_ring,
-					dist_tx_ring, mbuf_pool};
+					dist_tx_ring, mbuf_pool, &worker_rings};
 
 			rte_eal_remote_launch((lcore_function_t *)lcore_worker,
 					p, lcore_id);

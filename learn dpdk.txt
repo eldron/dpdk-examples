@@ -42,6 +42,14 @@ range 0 size start min max increment
 
 load <path-to-file> // load a command/script file from the given path
 
+page rnd
+enable 0 random
+set 0 rnd 0 26 ........XXXXXXXXXXXXXXXXXXXXXXXX
+set 0 rnd 1 34 XXXXXXXXXXXXXXXX................
+str
+page stats
+
+
 // start/stop sending packets on ports
 start 0
 stop 0
