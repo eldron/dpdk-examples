@@ -91,6 +91,11 @@ struct middlebox_service {
 	middlebox_service_free_resource_function * free_resource;
 };
 
+struct middlebox_service_chain {
+	uint8_t number_of_middleboxces;
+	struct middlebox_service middleboxes[MAX_MIDDLEBOXES_PER_FLOW];
+}
+
 struct middlebox_service_functions {
 	middlebox_service_id_function * middlebox_id;
 	middlebox_service_init_function * init_middlebox;
@@ -133,7 +138,7 @@ struct middlebox_service_functions ms_functions[] = {
 		.middlebox_service_free_resource_function = dummy_middlebox_free
 	}
 
-
+	// other middleboxes
 };
 
 /* mask of enabled ports */
@@ -771,7 +776,19 @@ lcore_worker(struct lcore_params *p)
 	unsigned int num = 0;
 	unsigned int i;
 
-	struct 
+	struct middlebox_chain_configure * mcbuf[BURST_SIZE * 4];
+	struct rte_ring * workerring = (*(p->worker_rings))[rte_lcore_id()];
+
+	struct rte_hash_parameters mbchain_table_params = {
+		.name = NULL, 
+		.entries = 1024,
+		.reserved = 0,
+		.key_len = 16,
+		.hash_func = rte_jhash,
+		.hash_func_init_val = 0,
+	};
+	struct rte_hash * mbchain_table = rte_hash_create(&mbchain_table_params);
+
 	/*
 	 * for single port, xor_val will be zero so we won't modify the output
 	 * port, otherwise we send traffic from 0 to 1, 2 to 3, and vice versa
@@ -779,25 +796,75 @@ lcore_worker(struct lcore_params *p)
 	const unsigned xor_val = (rte_eth_dev_count_avail() > 1);
 	struct rte_mbuf *buf[8] __rte_cache_aligned;
 
-	for (i = 0; i < 8; i++)
+	for (i = 0; i < 8; i++){
 		buf[i] = NULL;
+		mcbuf[i] = NULL;
+	}
 
 	app_stats.worker_pkts[p->worker_id] = 1;
 
 	printf("\nCore %u acting as worker core.\n", rte_lcore_id());
 	while (!quit_signal_work) {
 		// read worker ring to receive control messages
-		uint16_t nb_rx = rte_ring_dequeue_burst(in_r,
-				(void *)bufs, BURST_SIZE*1, NULL);
+		uint16_t nb_rx = rte_ring_dequeue_burst(workerring,
+				(void *)mcbuf, BURST_SIZE*1, NULL);
+		for(i = 0;i < nb_rx;i++){
+			struct middlebox_chain_configure * mcc = mcbuf[i];
+			struct middlebox_service_chain * mb_chain = rte_malloc(NULL, sizeof(struct middlebox_service_chain), 0);
+			mb_chain->number_of_middleboxces = mcc->number_of_middleboxces;
+			int j;
+			for(j = 0;j < mcc->number_of_middleboxces;j++){
+				//mb_chain[j] = rte_malloc(NULL, sizeof(struct middlebox_service), 0);
+				struct middlebox_service_functions * mb_functions = NULL;
+				rte_hash_lookup_data(middlebox_service_functions_table, &(mcc->middleboxes[j]), &mb_functions);
+				mb_chain->middleboxes[j].id = mb_functions->middlebox_id();
+				mb_chain->middleboxes[j].middlebox_id = mb_functions->middlebox_id;
+				mb_chain->middleboxes[j].init_middlebox = mb_functions->init_middlebox;
+				mb_chain->middleboxes[j].handle_packet = mb_functions->handle_packet;
+				mb_chain->middleboxes[j].free_resource = mb_functions->free_resource;
+
+				mb_chain->middleboxes[j].init_middlebox(&(mb_chain->middleboxes[j]));// initialize the middlebox service
+			}
+
+			// insert the middlebox chain into hash table 
+			uint8_t key[16];
+			memset(key, 0, 16);
+			memcpy(key, &(mcc.src_ip), 4);
+			memcpy(key + 4, &(mcc.dst_ip), 4);
+			memcpy(key + 8, &(mcc.src_port), 2);
+			memcpy(key + 10, &(mcc.dst_port), 2);
+			memcpy(key + 12, &(mcc.proto), 1);
+			int rv = rte_hash_add_key_data(mbchain_table, key, mb_chain);
+			if(rv){
+				rte_exit(EXIT_FAILURE, "insert middlebox chain to mbchain_table failed\n");
+			}
+		}
 
 		num = rte_distributor_get_pkt(d, id, buf, buf, num);
 		/* Do a little bit of work for each packet */
 		for (i = 0; i < num; i++) {
-			uint64_t t = rte_rdtsc()+100;
+			uint8_t key[16];
+			memset(key, 0, 16);
+			struct ipv4_hdr * ipv4_hdr = rte_pktmbuf_mtod_offset(buf[i], struct ipv4_hdr *, sizeof(struct ether_hdr));
+			uint8_t iphdr_len = (ipv4_hdr->version_ihl & 0x0f) * 4;
+			struct tcp_hdr * tcphdr = rte_pktmbuf_mtod_offset(buf[i], struct tcp_hdr *, sizeof(struct ether_hdr) + iphdr_len);
+			memcpy(key, &(ipv4_hdr->src_addr), 4);
+			memcpy(key + 4, &(ipv4_hdr->dst_addr), 4);
+			memcpy(key + 8, &(tcphdr->src_port), 2);
+			memcpy(key + 10, &(tcphdr->dst_port), 2);
+			memcpy(key + 12, &(ipv4_hdr->next_proto_id), 1);
 
-			while (rte_rdtsc() < t)
-				rte_pause();
-			buf[i]->port ^= xor_val;
+			struct middlebox_service_chain * mb_chain = NULL;
+			rte_hash_lookup_data(mbchain_table, key, &mb_chain);
+			int j;
+			for(j = 0;j < mb_chain->number_of_middleboxces;j++){
+				int action = mb_chain->middleboxes[j].handle_packet(&(mb_chain->middleboxes[j]), buf[i]);
+				if(action == 0){
+					// the packet is dropped by the middlebox
+					break;
+				}
+				// else forward packet to the next middlebox for processing
+			}
 		}
 
 		app_stats.worker_pkts[p->worker_id] += num;
@@ -1053,7 +1120,7 @@ main(int argc, char *argv[])
 
 	for(i = 0;i < number_of_worker_lcores;i++){
 		char name[50];
-		sprintf(name, "workring%u", i);
+		sprintf(name, "workerring%u", i);
 		worker_rings[worker_lcore_ids[i]] = rte_ring_create(name, SCHED_RX_RING_SZ,
 			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
 		if (worker_rings[worker_lcore_ids[i]] == NULL) {
