@@ -98,6 +98,8 @@ struct middlebox_service_functions {
 	middlebox_service_free_resource_function * free_resource;
 };
 
+// initialized at system initialization
+// used by worker lcores to dynamically create middlebox service instance at run time
 struct rte_hash * middlebox_service_functions_table;
 
 // implementation of a dummy middlebox
@@ -950,7 +952,17 @@ main(int argc, char *argv[])
 		.hash_func = rte_jhash,
 		.hash_func_init_val = 0,
 	};
-	middlebox_service_functions_table = rte_hash_create()
+	middlebox_service_functions_table = rte_hash_create(&middlebox_function_table_parameters);
+	unsigned ms_functions_len = sizeof(ms_functions) / sizeof(struct middlebox_service_functions);
+	int i = 0;
+	int rv;
+	for(i = 0;i < ms_functions_len;i++){
+		uint64_t middlebox_id = ms_functions[i].middlebox_id();
+		rv = rte_hash_add_key_data(middlebox_service_functions_table, &middlebox_id, &{ms_functions[i]});
+		if(rv != 0){
+			rte_exit(EXIT_FAILURE, "can not add key data into middlebox_service_functions_table\n");
+		}
+	}
 
 	/* initialize all ports */
 	RTE_ETH_FOREACH_DEV(portid) {
