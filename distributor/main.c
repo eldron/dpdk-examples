@@ -22,6 +22,8 @@
 #include <rte_pause.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
+#include <rte_hash.h>
+#include <rte_jhash.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -46,18 +48,91 @@
 // 202.197.15.66
 unsigned platform_ip = 0xCAC50F42;
 
-struct {
+struct middlebox_chain_configure {
 	// flow information
 	uint32_t src_ip;
 	uint32_t dst_ip;
 	uint16_t src_port;
 	uint16_t dst_port;
 	uint8_t proto;
+
+	uint8_t number_of_middleboxces;
 	// middlebox chain specification
-	uint64_t middleboxes[MAX_MIDDLEBOXES_PER_FLOW];
-} middlebox_chain_configure;
+	uint64_t middleboxes[MAX_MIDDLEBOXES_PER_FLOW];// each middlebox is identified by an id
+};
+
+struct middlebox_service;
+
+/*
+	middlebox manufacturers implement the following 4 functions
+*/
+typedef int middlebox_service_id_function();
+
+// initialize the middlebox service structure
+// use rte_malloc() to allocate memory for private data
+// return 1 if succeed, 0 failed
+typedef int middlebox_service_init_function(struct middlebox_service * ms);
+
+// return 0: drop packet, if 1: forward to the next middlebox service
+typedef int middlebox_service_handle_packet_function(struct middlebox_service * ms, struct rte_mbuf * m);
+
+// free middlebox allocated resource 
+// use rte_free to free memory of private data
+// return 1 if succeeded, 0 if failed
+typedef int middlebox_service_free_resource_function(struct middlebox_service * ms);
+
+struct middlebox_service {
+	// the middlebox can store additional private data 
+	void * private_data;
+	uint64_t id;// the middlebox id
+
+	middlebox_service_init_function * init_middlebox;
+	middlebox_service_handle_packet_function * handle_packet;
+	middlebox_service_free_resource_function * free_resource;
+};
+
+struct middlebox_service_functions {
+	middlebox_service_id_function * middlebox_id;
+	middlebox_service_init_function * init_middlebox;
+	middlebox_service_handle_packet_function * handle_packet;
+	middlebox_service_free_resource_function * free_resource;
+};
+
+struct rte_hash * middlebox_service_functions_table;
+
+// implementation of a dummy middlebox
+int dummy_middlebox_id(){
+	return 0;
+}
+
+int dummy_middlebox_init(struct middlebox_service * ms){
+	ms->private_data = NULL;
+	ms->id = 0;
+	return 1;
+}
+
+int dummy_middlebox_handle_pkt(struct middlebox_service * ms, struct rte_mbuf * m){
+	return 1;
+}
+
+int dummy_middlebox_free(struct middlebox_service * ms){
+	return 1;
+}
 
 struct rte_mempool * mcconfig_pool;
+
+// add manufacturers' middlebox implementation to this array
+// during system initialization, add the middleboxes to middlebox service functions table for fast access
+struct middlebox_service_functions ms_functions[] = {
+	{	
+		.middlebox_id = dummy_middlebox_id,
+		.middlebox_service_init_function = dummy_middlebox_init,
+		.middlebox_service_handle_packet_function = dummy_middlebox_handle_pkt,
+		.middlebox_service_free_resource_function = dummy_middlebox_free
+	}
+
+
+};
 
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
@@ -230,7 +305,7 @@ struct lcore_params {
 	struct rte_ring *rx_dist_ring;
 	struct rte_ring *dist_tx_ring;
 	struct rte_mempool *mem_pool;
-	struct rte_ring ** worker_rings;
+	struct rte_ring ** worker_rings; // indexed by the worker lcore id
 };
 
 static int
@@ -240,7 +315,7 @@ lcore_rx(struct lcore_params *p)
 	const int socket_id = rte_socket_id();
 	uint16_t port;
 	struct rte_mbuf *bufs[BURST_SIZE*2];
-	struct middlebox_chain_configure * 
+	//struct middlebox_chain_configure * 
 
 	RTE_ETH_FOREACH_DEV(port) {
 		/* skip ports that are not enabled */
@@ -694,6 +769,7 @@ lcore_worker(struct lcore_params *p)
 	unsigned int num = 0;
 	unsigned int i;
 
+	struct 
 	/*
 	 * for single port, xor_val will be zero so we won't modify the output
 	 * port, otherwise we send traffic from 0 to 1, 2 to 3, and vice versa
@@ -708,6 +784,10 @@ lcore_worker(struct lcore_params *p)
 
 	printf("\nCore %u acting as worker core.\n", rte_lcore_id());
 	while (!quit_signal_work) {
+		// read worker ring to receive control messages
+		uint16_t nb_rx = rte_ring_dequeue_burst(in_r,
+				(void *)bufs, BURST_SIZE*1, NULL);
+
 		num = rte_distributor_get_pkt(d, id, buf, buf, num);
 		/* Do a little bit of work for each packet */
 		for (i = 0; i < num; i++) {
@@ -852,7 +932,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 	nb_ports_available = nb_ports;
 
-	mcconfig_pool = rte_mempool_create("mcconfig_pool", 63, sizeof(struct middlebox_chain_configure),
+	mcconfig_pool = rte_mempool_create("mcconfig_pool", 1023, sizeof(struct middlebox_chain_configure),
 		   0, 0,
 		   NULL, NULL,
 		   NULL, NULL,
@@ -860,7 +940,18 @@ main(int argc, char *argv[])
 	if(mcconfig_pool == NULL){
 		rte_exit(EXIT_FAILURE, "cannot create mcconfig_pool\n");
 	}
-	
+
+	// initialize the middlebox function table
+	struct rte_hash_parameters middlebox_function_table_parameters = {
+		.name = "middlebox_service_functions_table", 
+		.entries = 1024,
+		.reserved = 0,
+		.key_len = 8,
+		.hash_func = rte_jhash,
+		.hash_func_init_val = 0,
+	};
+	middlebox_service_functions_table = rte_hash_create()
+
 	/* initialize all ports */
 	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */

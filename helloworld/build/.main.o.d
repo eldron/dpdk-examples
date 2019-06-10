@@ -172,4 +172,10 @@ dep_main.o = /mnt/hgfs/examples/helloworld/main.c /usr/include/stdc-predef.h \
  /usr/lib/gcc/x86_64-linux-gnu/7/include/xsavecintrin.h \
  /usr/lib/gcc/x86_64-linux-gnu/7/include/mwaitxintrin.h \
  /usr/lib/gcc/x86_64-linux-gnu/7/include/clzerointrin.h \
- /usr/lib/gcc/x86_64-linux-gnu/7/include/pkuintrin.h
+ /usr/lib/gcc/x86_64-linux-gnu/7/include/pkuintrin.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_malloc.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_hash.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_jhash.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_byteorder.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/generic/rte_byteorder.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_byteorder_64.h
