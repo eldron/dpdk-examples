@@ -86,6 +86,7 @@ struct middlebox_service {
 	void * private_data;
 	uint64_t id;// the middlebox id
 
+	middlebox_service_id_function * middlebox_id;
 	middlebox_service_init_function * init_middlebox;
 	middlebox_service_handle_packet_function * handle_packet;
 	middlebox_service_free_resource_function * free_resource;
@@ -94,7 +95,7 @@ struct middlebox_service {
 struct middlebox_service_chain {
 	uint8_t number_of_middleboxces;
 	struct middlebox_service middleboxes[MAX_MIDDLEBOXES_PER_FLOW];
-}
+};
 
 struct middlebox_service_functions {
 	middlebox_service_id_function * middlebox_id;
@@ -133,9 +134,9 @@ struct rte_mempool * mcconfig_pool;
 struct middlebox_service_functions ms_functions[] = {
 	{	
 		.middlebox_id = dummy_middlebox_id,
-		.middlebox_service_init_function = dummy_middlebox_init,
-		.middlebox_service_handle_packet_function = dummy_middlebox_handle_pkt,
-		.middlebox_service_free_resource_function = dummy_middlebox_free
+		.init_middlebox = dummy_middlebox_init,
+		.handle_packet = dummy_middlebox_handle_pkt,
+		.free_resource = dummy_middlebox_free
 	}
 
 	// other middleboxes
@@ -777,7 +778,7 @@ lcore_worker(struct lcore_params *p)
 	unsigned int i;
 
 	struct middlebox_chain_configure * mcbuf[BURST_SIZE * 4];
-	struct rte_ring * workerring = (*(p->worker_rings))[rte_lcore_id()];
+	struct rte_ring * workerring = (p->worker_rings)[rte_lcore_id()];
 
 	struct rte_hash_parameters mbchain_table_params = {
 		.name = NULL, 
@@ -829,11 +830,11 @@ lcore_worker(struct lcore_params *p)
 			// insert the middlebox chain into hash table 
 			uint8_t key[16];
 			memset(key, 0, 16);
-			memcpy(key, &(mcc.src_ip), 4);
-			memcpy(key + 4, &(mcc.dst_ip), 4);
-			memcpy(key + 8, &(mcc.src_port), 2);
-			memcpy(key + 10, &(mcc.dst_port), 2);
-			memcpy(key + 12, &(mcc.proto), 1);
+			memcpy(key, &(mcc->src_ip), 4);
+			memcpy(key + 4, &(mcc->dst_ip), 4);
+			memcpy(key + 8, &(mcc->src_port), 2);
+			memcpy(key + 10, &(mcc->dst_port), 2);
+			memcpy(key + 12, &(mcc->proto), 1);
 			int rv = rte_hash_add_key_data(mbchain_table, key, mb_chain);
 			if(rv){
 				rte_exit(EXIT_FAILURE, "insert middlebox chain to mbchain_table failed\n");
@@ -1025,7 +1026,7 @@ main(int argc, char *argv[])
 	int rv;
 	for(i = 0;i < ms_functions_len;i++){
 		uint64_t middlebox_id = ms_functions[i].middlebox_id();
-		rv = rte_hash_add_key_data(middlebox_service_functions_table, &middlebox_id, &{ms_functions[i]});
+		rv = rte_hash_add_key_data(middlebox_service_functions_table, &middlebox_id, &(ms_functions[i]));
 		if(rv != 0){
 			rte_exit(EXIT_FAILURE, "can not add key data into middlebox_service_functions_table\n");
 		}
@@ -1083,7 +1084,6 @@ main(int argc, char *argv[])
 	unsigned worker_lcore_ids[MAX_NUM_LCORES]; // should be enough in most cases
 	// index by the work lcore id
 	struct rte_ring * worker_rings[MAX_NUM_LCORES];
-	unsigned i;
 	for(i = 0;i < MAX_NUM_LCORES;i++){
 		worker_rings[i] = NULL;
 	}
@@ -1139,7 +1139,7 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d,
-				rx_dist_ring, dist_tx_ring, mbuf_pool, &worker_rings};
+				rx_dist_ring, dist_tx_ring, mbuf_pool, worker_rings};
 
 			rte_eal_remote_launch(
 				(lcore_function_t *)lcore_distributor,
@@ -1159,7 +1159,7 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d, rx_dist_ring,
-					dist_tx_ring, mbuf_pool, &worker_rings};
+					dist_tx_ring, mbuf_pool, worker_rings};
 			rte_eal_remote_launch((lcore_function_t *)lcore_rx,
 					p, lcore_id);
 		} else {
@@ -1170,7 +1170,7 @@ main(int argc, char *argv[])
 			if (!p)
 				rte_panic("malloc failure\n");
 			*p = (struct lcore_params){worker_id, d, rx_dist_ring,
-					dist_tx_ring, mbuf_pool, &worker_rings};
+					dist_tx_ring, mbuf_pool, worker_rings};
 
 			rte_eal_remote_launch((lcore_function_t *)lcore_worker,
 					p, lcore_id);

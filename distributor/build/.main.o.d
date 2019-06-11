@@ -230,4 +230,6 @@ dep_main.o = /mnt/hgfs/examples/distributor/main.c /usr/include/stdc-predef.h \
  /usr/include/x86_64-linux-gnu/bits/types/struct_osockaddr.h \
  /usr/include/x86_64-linux-gnu/bits/socket2.h \
  /usr/include/x86_64-linux-gnu/bits/in.h \
- /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_tcp.h
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_tcp.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_hash.h \
+ /home/test/Desktop/dpdk-18.11.1/dpdk-stable-18.11.1/x86_64-native-linuxapp-gcc/include/rte_jhash.h
